@@ -5,6 +5,11 @@ def call(Map config = [:]) {
     def pullPort = config.pullPort ?: "8083"
     def pushPort = config.pushPort ?: "8082"
     def publishDocker = config.publishDocker != false
+    def deployHost = config.deployHost
+    def deployUser = config.deployUser
+    def deployDir = config.deployDir ?: "/home/ubuntu/deploy-registry"
+    def runSmokeTests = config.runSmokeTests != false
+    def smokeTestUrl = config.smokeTestUrl ?: "http://${deployHost}:80/api/products"
 
     pipeline {
         agent any
@@ -82,6 +87,64 @@ def call(Map config = [:]) {
                     }
                 }
             }
+
+            stage('Deploy to EC2'){
+                when{
+                    expression{ return deployHost != null}
+                }
+
+                steps {
+                    
+                    script {
+                         sh """
+
+                           ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} \\
+                              'cd ${DEPLOY_DIR} && \\
+                               sed -i "s|${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|${nexusHost}:${pushPort}/ingesoft/${serviceName}:${IMAGE_TAG}|g" docker-compose.yml && \\
+                               docker login ${nexusHost}:${pushPort} -u ci-publisher --password-stdin && \\
+                               docker compose pull && \\
+                               docker compose up -d'
+                        """
+                    }
+                }
+            }
+
+            stage('Wait for Backend Health') {
+                when {
+                    expression { return deployHost != null }
+                }
+
+                steps {
+                    script {
+                        sh """
+                            until curl -sf http://${DEPLOY_HOST}:8080/api/products >/dev/null; do
+                              echo "Esperando backend..."
+                              sleep 5
+                            done
+                        """
+                    }
+                }
+
+            }
+
+            stage('Smoke Test'){
+                when {
+                    allOf {
+                        expression { return deployHost != null }
+                        expression { return runSmokeTests }
+                    }
+                }
+
+                steps {
+                    script {
+                        sh """
+                            curl -sf ${smokeTestUrl} | jq .
+                        """
+                    }
+                }
+            }
+        
+            
         }
     }
 }
