@@ -101,26 +101,28 @@ def call(Map config = [:]) {
                             passwordVariable: 'NEXUS_PASS'
                         )
                     ]) {
-                        sh """
-                            set -eu
+                        sshagent(credentials: ['deploy-ssh-key']) {
+                            sh """
+                                set -eu
 
-                            printf '%s' "\$NEXUS_PASS" | ssh \
-                              -o StrictHostKeyChecking=no \
-                              ${deployUser}@${deployHost} \
-                              "set -eu
-                               cd ${deployDir}
+                                printf '%s' "\$NEXUS_PASS" | ssh \
+                                  -o StrictHostKeyChecking=no \
+                                  ${deployUser}@${deployHost} \
+                                  "set -eu
+                                   cd ${deployDir}
 
-                               printf '%s' '\$(cat)' | docker login ${nexusHost}:${pushPort} \
-                                 -u '\$NEXUS_USER' \
-                                 --password-stdin
+                                   printf '%s' '\$(cat)' | docker login ${nexusHost}:${pushPort} \
+                                     -u '\$NEXUS_USER' \
+                                     --password-stdin
 
-                               sed -i 's|${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|${nexusHost}:${pushPort}/ingesoft/${serviceName}:${env.IMAGE_TAG}|g' docker-compose.yml
+                                   sed -i 's|${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|${nexusHost}:${pushPort}/ingesoft/${serviceName}:${env.IMAGE_TAG}|g' docker-compose.yml
 
-                               docker compose pull
-                               docker compose up -d --remove-orphans
-                               docker logout ${nexusHost}:${pushPort} || true
-                              "
-                        """
+                                   docker compose pull
+                                   docker compose up -d --remove-orphans
+                                   docker logout ${nexusHost}:${pushPort} || true
+                                  "
+                            """
+                        }
                     }
                 }
             }
