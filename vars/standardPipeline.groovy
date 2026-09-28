@@ -88,22 +88,38 @@ def call(Map config = [:]) {
                 }
             }
 
-            stage('Deploy to EC2'){
-                when{
-                    expression{ return deployHost != null}
+            stage('Deploy to EC2') {
+                when {
+                    expression { return deployHost != null }
                 }
 
                 steps {
-                    
-                    script {
-                         sh """
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'nexus-credentials',
+                            usernameVariable: 'NEXUS_USER',
+                            passwordVariable: 'NEXUS_PASS'
+                        )
+                    ]) {
+                        sh """
+                            set -eu
 
-                           ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} \\
-                              'cd ${DEPLOY_DIR} && \\
-                               sed -i "s|${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|${nexusHost}:${pushPort}/ingesoft/${serviceName}:${IMAGE_TAG}|g" docker-compose.yml && \\
-                               docker login ${nexusHost}:${pushPort} -u ci-publisher --password-stdin && \\
-                               docker compose pull && \\
-                               docker compose up -d'
+                            printf '%s' "\$NEXUS_PASS" | ssh \
+                              -o StrictHostKeyChecking=no \
+                              ${deployUser}@${deployHost} \
+                              "set -eu
+                               cd ${deployDir}
+
+                               printf '%s' '\$(cat)' | docker login ${nexusHost}:${pushPort} \
+                                 -u '\$NEXUS_USER' \
+                                 --password-stdin
+
+                               sed -i 's|${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|${nexusHost}:${pushPort}/ingesoft/${serviceName}:${env.IMAGE_TAG}|g' docker-compose.yml
+
+                               docker compose pull
+                               docker compose up -d --remove-orphans
+                               docker logout ${nexusHost}:${pushPort} || true
+                              "
                         """
                     }
                 }
@@ -115,19 +131,27 @@ def call(Map config = [:]) {
                 }
 
                 steps {
-                    script {
-                        sh """
-                            until curl -sf http://${DEPLOY_HOST}:8080/api/products >/dev/null; do
-                              echo "Esperando backend..."
-                              sleep 5
-                            done
-                        """
-                    }
-                }
+                    sh """
+                        set -eu
 
+                        for attempt in \$(seq 1 24); do
+                          if curl -fsS --max-time 5 \
+                            http://${deployHost}/api/products >/dev/null; then
+                            echo "Backend saludable."
+                            exit 0
+                          fi
+
+                          echo "Esperando backend (intento \$attempt/24)..."
+                          sleep 5
+                        done
+
+                        echo "El backend no respondió dentro de 120 segundos."
+                        exit 1
+                    """
+                }
             }
 
-            stage('Smoke Test'){
+            stage('Smoke Test') {
                 when {
                     allOf {
                         expression { return deployHost != null }
@@ -136,11 +160,11 @@ def call(Map config = [:]) {
                 }
 
                 steps {
-                    script {
-                        sh """
-                            curl -sf ${smokeTestUrl} | jq .
-                        """
-                    }
+                    sh """
+                        set -eu
+                        curl -fsS --max-time 10 "${smokeTestUrl}" >/dev/null
+                        echo "Smoke test aprobado: ${smokeTestUrl}"
+                    """
                 }
             }
         
