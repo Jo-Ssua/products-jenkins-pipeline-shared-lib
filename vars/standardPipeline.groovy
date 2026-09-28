@@ -101,7 +101,7 @@ def call(Map config = [:]) {
                             passwordVariable: 'NEXUS_PASS'
                         )
                     ]) {
-                        sshagent(credentials: ['deploy-ssh-key']) {
+                        sshagent(credentials: ['ssh-deploy-qa']) {
                             sh """
                                 set -eu
 
