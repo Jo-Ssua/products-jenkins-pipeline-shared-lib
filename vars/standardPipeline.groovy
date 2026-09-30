@@ -89,6 +89,7 @@ def call(Map config = [:]) {
                 }
             }
 
+            
             stage('Deploy to EC2') {
                 when {
                     expression { return deployHost != null }
@@ -112,11 +113,11 @@ def call(Map config = [:]) {
                                   "set -eu
                                    cd ${deployDir}
 
-                                   printf '%s' '\\\$(cat)' | docker login ${nexusHost}:${pushPort} \
+                                   docker login ${nexusHost}:${pushPort} \
                                      -u '\$NEXUS_USER' \
                                      --password-stdin
 
-                                   sed -i 's|image: ${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|image: ${nexusHost}:${pushPort}/ingesoft/${serviceName}:${env.IMAGE_TAG}|g' docker-compose.yml
+                                   sed -Ei 's|image: ${nexusHost}:[0-9]+/ingesoft/${serviceName}:.*|image: ${nexusHost}:${pushPort}/ingesoft/${serviceName}:${env.IMAGE_TAG}|' docker-compose.yml
 
                                    docker compose pull ${composeService}
                                    docker compose up -d --no-deps ${composeService}
