@@ -109,6 +109,12 @@ def call(Map config = [:]) {
             }
 
             stage('Promote Docker Image') {
+                when {
+                    expression {
+                        return !buildDocker
+                    }
+                }
+
                 steps {
                     withCredentials([
                         usernamePassword(
@@ -128,14 +134,8 @@ def call(Map config = [:]) {
                               -u "$NEXUS_USER" \
                               --password-stdin
 
-                            if [ "$BUILD_DOCKER" = "true" ]; then
-                              IMAGE_TO_PROMOTE="$BUILD_IMAGE"
-                            else
-                              IMAGE_TO_PROMOTE="$SOURCE_IMAGE"
-                            fi
-
-                            docker pull "$IMAGE_TO_PROMOTE"
-                            docker tag "$IMAGE_TO_PROMOTE" "$TARGET_IMAGE"
+                            docker pull "$SOURCE_IMAGE"
+                            docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
                             docker push "$TARGET_IMAGE"
 
                             docker logout "$NEXUS_PULL" || true
