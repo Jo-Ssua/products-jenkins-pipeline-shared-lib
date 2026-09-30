@@ -18,6 +18,9 @@ def call(Map config = [:]) {
     def sshCredentialsId = config.sshCredentialsId ?: 'ssh-deploy-qa'
     def nexusCredentialsId = config.nexusCredentialsId ?: 'nexus-credentials'
 
+    def buildDocker = config.buildDocker == true
+    def dockerContext = config.dockerContext ?: '.'
+
     pipeline {
         agent any
 
@@ -33,7 +36,7 @@ def call(Map config = [:]) {
                 }
             }
 
-            stage('Prepare Promotion Tag') {
+            stage('Prepare Image Tags') {
                 steps {
                     script {
                         env.GIT_SHORT = sh(
@@ -49,12 +52,59 @@ def call(Map config = [:]) {
                         env.SOURCE_IMAGE =
                             "${env.NEXUS_PULL}/ingesoft/${serviceName}:${sourceTag}"
 
+                        env.BUILD_IMAGE =
+                            "${env.NEXUS_PULL}/ingesoft/${serviceName}:${env.IMAGE_TAG}"
+
                         env.TARGET_IMAGE =
                             "${env.NEXUS_PUSH}/ingesoft/${serviceName}:${env.IMAGE_TAG}"
                     }
 
-                    echo "Imagen origen: ${env.SOURCE_IMAGE}"
+                    echo "Imagen origen configurada: ${env.SOURCE_IMAGE}"
+                    echo "Imagen de build: ${env.BUILD_IMAGE}"
                     echo "Imagen promovida: ${env.TARGET_IMAGE}"
+                }
+            }
+
+            stage('Build Docker Image') {
+                when {
+                    expression { return buildDocker }
+                }
+
+                steps {
+                    sh """
+                        set -eu
+                        docker build --no-cache \
+                          -t "${env.BUILD_IMAGE}" \
+                          "${dockerContext}"
+                    """
+                }
+            }
+
+            stage('Push Build Image to Nexus') {
+                when {
+                    expression { return buildDocker }
+                }
+
+                steps {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: nexusCredentialsId,
+                            usernameVariable: 'NEXUS_USER',
+                            passwordVariable: 'NEXUS_PASS'
+                        )
+                    ]) {
+                        sh '''
+                            set -eu
+
+                            echo "$NEXUS_PASS" | docker login "$NEXUS_PULL" \
+                              -u "$NEXUS_USER" \
+                              --password-stdin
+
+                            docker push "$BUILD_IMAGE"
+
+                            docker logout "$NEXUS_PULL" || true
+                        '''
+                    }
                 }
             }
 
@@ -78,8 +128,14 @@ def call(Map config = [:]) {
                               -u "$NEXUS_USER" \
                               --password-stdin
 
-                            docker pull "$SOURCE_IMAGE"
-                            docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+                            if [ "$BUILD_DOCKER" = "true" ]; then
+                              IMAGE_TO_PROMOTE="$BUILD_IMAGE"
+                            else
+                              IMAGE_TO_PROMOTE="$SOURCE_IMAGE"
+                            fi
+
+                            docker pull "$IMAGE_TO_PROMOTE"
+                            docker tag "$IMAGE_TO_PROMOTE" "$TARGET_IMAGE"
                             docker push "$TARGET_IMAGE"
 
                             docker logout "$NEXUS_PULL" || true
