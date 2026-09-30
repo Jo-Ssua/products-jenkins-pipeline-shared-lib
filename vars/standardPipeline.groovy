@@ -1,15 +1,22 @@
 def call(Map config = [:]) {
-    def serviceName = config.serviceName ?: error("Falta serviceName")
-    def nexusHost = config.nexusHost ?: error("Falta nexusHost")
-    def sourceTag = config.sourceTag ?: "1.0.0"
-    def pullPort = config.pullPort ?: "8083"
-    def pushPort = config.pushPort ?: "8082"
-    def publishDocker = config.publishDocker != false
+    def serviceName = config.serviceName ?: error('Falta serviceName')
+    def nexusHost = config.nexusHost ?: error('Falta nexusHost')
+
+    def sourceTag = config.sourceTag ?: error('Falta sourceTag')
+    def pullPort = config.pullPort ?: '8083'
+    def pushPort = config.pushPort ?: '8082'
+
     def deployHost = config.deployHost
-    def deployUser = config.deployUser
-    def deployDir = config.deployDir ?: "/home/ubuntu/deploy-registry"
+    def deployUser = config.deployUser ?: 'ubuntu'
+    def deployDir = config.deployDir ?: '/home/ubuntu/deploy-registry'
+
+    def composeService = config.composeService ?: serviceName
+    def healthUrl = config.healthUrl
+    def smokeTestUrl = config.smokeTestUrl
     def runSmokeTests = config.runSmokeTests != false
-    def smokeTestUrl = config.smokeTestUrl ?: "http://${deployHost}:80/api/products"
+
+    def sshCredentialsId = config.sshCredentialsId ?: 'ssh-deploy-qa'
+    def nexusCredentialsId = config.nexusCredentialsId ?: 'nexus-credentials'
 
     pipeline {
         agent any
@@ -26,7 +33,7 @@ def call(Map config = [:]) {
                 }
             }
 
-            stage('Prepare Image Tag') {
+            stage('Prepare Promotion Tag') {
                 steps {
                     script {
                         env.GIT_SHORT = sh(
@@ -46,20 +53,16 @@ def call(Map config = [:]) {
                             "${env.NEXUS_PUSH}/ingesoft/${serviceName}:${env.IMAGE_TAG}"
                     }
 
-                    echo "Origen: ${env.SOURCE_IMAGE}"
-                    echo "Destino: ${env.TARGET_IMAGE}"
+                    echo "Imagen origen: ${env.SOURCE_IMAGE}"
+                    echo "Imagen promovida: ${env.TARGET_IMAGE}"
                 }
             }
 
             stage('Promote Docker Image') {
-                when {
-                    expression { return publishDocker }
-                }
-
                 steps {
                     withCredentials([
                         usernamePassword(
-                            credentialsId: 'nexus-credentials',
+                            credentialsId: nexusCredentialsId,
                             usernameVariable: 'NEXUS_USER',
                             passwordVariable: 'NEXUS_PASS'
                         )
@@ -67,13 +70,11 @@ def call(Map config = [:]) {
                         sh '''
                             set -eu
 
-                            echo "$NEXUS_PASS" | docker login \
-                              "$NEXUS_PULL" \
+                            echo "$NEXUS_PASS" | docker login "$NEXUS_PULL" \
                               -u "$NEXUS_USER" \
                               --password-stdin
 
-                            echo "$NEXUS_PASS" | docker login \
-                              "$NEXUS_PUSH" \
+                            echo "$NEXUS_PASS" | docker login "$NEXUS_PUSH" \
                               -u "$NEXUS_USER" \
                               --password-stdin
 
@@ -96,12 +97,12 @@ def call(Map config = [:]) {
                 steps {
                     withCredentials([
                         usernamePassword(
-                            credentialsId: 'nexus-credentials',
+                            credentialsId: nexusCredentialsId,
                             usernameVariable: 'NEXUS_USER',
                             passwordVariable: 'NEXUS_PASS'
                         )
                     ]) {
-                        sshagent(credentials: ['ssh-deploy-qa']) {
+                        sshagent(credentials: [sshCredentialsId]) {
                             sh """
                                 set -eu
 
@@ -111,14 +112,15 @@ def call(Map config = [:]) {
                                   "set -eu
                                    cd ${deployDir}
 
-                                   printf '%s' '\$(cat)' | docker login ${nexusHost}:${pushPort} \
+                                   printf '%s' '\\\$(cat)' | docker login ${nexusHost}:${pushPort} \
                                      -u '\$NEXUS_USER' \
                                      --password-stdin
 
-                                   sed -i 's|${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|${nexusHost}:${pushPort}/ingesoft/${serviceName}:${env.IMAGE_TAG}|g' docker-compose.yml
+                                   sed -i 's|image: ${nexusHost}:${pullPort}/ingesoft/${serviceName}:.*|image: ${nexusHost}:${pushPort}/ingesoft/${serviceName}:${env.IMAGE_TAG}|g' docker-compose.yml
 
-                                   docker compose pull
-                                   docker compose up -d --remove-orphans
+                                   docker compose pull ${composeService}
+                                   docker compose up -d --no-deps ${composeService}
+
                                    docker logout ${nexusHost}:${pushPort} || true
                                   "
                             """
@@ -127,9 +129,9 @@ def call(Map config = [:]) {
                 }
             }
 
-            stage('Wait for Backend Health') {
+            stage('Wait for Health') {
                 when {
-                    expression { return deployHost != null }
+                    expression { return healthUrl != null && deployHost != null }
                 }
 
                 steps {
@@ -137,17 +139,16 @@ def call(Map config = [:]) {
                         set -eu
 
                         for attempt in \$(seq 1 24); do
-                          if curl -fsS --max-time 5 \
-                            http://${deployHost}/api/products >/dev/null; then
-                            echo "Backend saludable."
+                          if curl -fsS --max-time 5 "${healthUrl}" >/dev/null; then
+                            echo "Health check aprobado: ${healthUrl}"
                             exit 0
                           fi
 
-                          echo "Esperando backend (intento \$attempt/24)..."
+                          echo "Esperando health check (\$attempt/24)..."
                           sleep 5
                         done
 
-                        echo "El backend no respondió dentro de 120 segundos."
+                        echo "El servicio no estuvo saludable tras 120 segundos."
                         exit 1
                     """
                 }
@@ -156,8 +157,9 @@ def call(Map config = [:]) {
             stage('Smoke Test') {
                 when {
                     allOf {
-                        expression { return deployHost != null }
                         expression { return runSmokeTests }
+                        expression { return smokeTestUrl != null }
+                        expression { return deployHost != null }
                     }
                 }
 
@@ -169,8 +171,6 @@ def call(Map config = [:]) {
                     """
                 }
             }
-        
-            
         }
     }
 }
